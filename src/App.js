@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Search, Cloud, Wind, Droplets, Eye, Gauge, Sunrise, Sunset, MapPin } from 'lucide-react';
 
 export default function WeatherNow() {
@@ -6,18 +6,66 @@ export default function WeatherNow() {
   const [weather, setWeather] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const suggestionsRef = useRef(null);
+  const inputRef = useRef(null);
 
-  const getWeather = async () => {
-    if (!city.trim()) return;
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (suggestionsRef.current && !suggestionsRef.current.contains(event.target) &&
+          inputRef.current && !inputRef.current.contains(event.target)) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    const fetchSuggestions = async () => {
+      if (city.trim().length < 2) {
+        setSuggestions([]);
+        setShowSuggestions(false);
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=5&language=en&format=json`
+        );
+        const data = await res.json();
+
+        if (data.results && data.results.length > 0) {
+          setSuggestions(data.results);
+          setShowSuggestions(true);
+        } else {
+          setSuggestions([]);
+          setShowSuggestions(false);
+        }
+      } catch (err) {
+        setSuggestions([]);
+      }
+    };
+
+    const debounce = setTimeout(fetchSuggestions, 300);
+    return () => clearTimeout(debounce);
+  }, [city]);
+
+  const getWeather = async (selectedCity = null) => {
+    const searchCity = selectedCity || city;
+    if (!searchCity.trim()) return;
 
     setLoading(true);
     setError('');
     setWeather(null);
+    setShowSuggestions(false);
 
     try {
-      // Geocoding API to get coordinates
       const geoRes = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(searchCity)}&count=1&language=en&format=json`
       );
       const geoData = await geoRes.json();
 
@@ -29,7 +77,6 @@ export default function WeatherNow() {
 
       const { latitude, longitude, name, country, admin1 } = geoData.results[0];
 
-      // Weather API
       const weatherRes = await fetch(
         `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,pressure_msl&daily=sunrise,sunset&timezone=auto`
       );
@@ -49,9 +96,47 @@ export default function WeatherNow() {
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter') {
-      getWeather();
+  const handleSuggestionClick = (suggestion) => {
+    const cityName = `${suggestion.name}, ${suggestion.country}`;
+    setCity(cityName);
+    setShowSuggestions(false);
+    setSelectedIndex(-1);
+    getWeather(cityName);
+  };
+
+  const handleKeyDown = (e) => {
+    if (!showSuggestions || suggestions.length === 0) {
+      if (e.key === 'Enter') {
+        getWeather();
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedIndex(prev => 
+          prev < suggestions.length - 1 ? prev + 1 : prev
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedIndex(prev => prev > 0 ? prev - 1 : -1);
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
+          handleSuggestionClick(suggestions[selectedIndex]);
+        } else {
+          getWeather();
+        }
+        break;
+      case 'Escape':
+        setShowSuggestions(false);
+        setSelectedIndex(-1);
+        break;
+      default:
+        break;
     }
   };
 
@@ -103,24 +188,65 @@ export default function WeatherNow() {
           <p className="text-blue-100">Quick weather conditions for any city</p>
         </div>
 
-        <div className="mb-8">
+        <div className="mb-8 relative">
           <div className="relative">
             <input
+              ref={inputRef}
               type="text"
               value={city}
               onChange={(e) => setCity(e.target.value)}
-              onKeyPress={handleKeyPress}
+              onKeyDown={handleKeyDown}
+              onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
               placeholder="Enter city name..."
               className="w-full px-6 py-4 pr-14 rounded-full text-lg shadow-lg focus:outline-none focus:ring-4 focus:ring-blue-300"
+              autoComplete="off"
             />
             <button
-              onClick={getWeather}
+              onClick={() => getWeather()}
               disabled={loading}
               className="absolute right-2 top-1/2 -translate-y-1/2 bg-blue-600 text-white p-3 rounded-full hover:bg-blue-700 transition-colors disabled:bg-gray-400"
             >
               <Search size={20} />
             </button>
           </div>
+
+          {showSuggestions && suggestions.length > 0 && (
+            <div
+              ref={suggestionsRef}
+              className="absolute w-full mt-2 bg-white rounded-2xl shadow-2xl overflow-hidden z-10 max-h-80 overflow-y-auto"
+            >
+              {suggestions.map((suggestion, index) => (
+                <div
+                  key={`${suggestion.id}-${index}`}
+                  onClick={() => handleSuggestionClick(suggestion)}
+                  className={`px-6 py-4 cursor-pointer transition-colors border-b border-gray-100 last:border-b-0 ${
+                    index === selectedIndex
+                      ? 'bg-blue-50'
+                      : 'hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <MapPin size={18} className="text-blue-600 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-gray-800 truncate">
+                        {suggestion.name}
+                      </div>
+                      <div className="text-sm text-gray-600 truncate">
+                        {[suggestion.admin1, suggestion.country]
+                          .filter(Boolean)
+                          .join(', ')}
+                      </div>
+                    </div>
+                    {suggestion.population && (
+                      <div className="text-xs text-gray-500 flex-shrink-0">
+                        Pop: {(suggestion.population / 1000000).toFixed(1)}M
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {error && (
